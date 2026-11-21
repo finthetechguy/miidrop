@@ -1,14 +1,18 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use miidrop::container;
 use miidrop::keys::Keys;
+use miidrop::link::Link;
 use miidrop::mii::{self, FIELDS, RECORD_SIZE, Record, STORED_SIZE, WRAPPED_SIZE};
 use miidrop::radio::Radio;
 use miidrop::scan;
-use miidrop::uds::MII_MAKER;
+use miidrop::session::Session;
+use miidrop::uds::{MII_MAKER, NetworkInfo, NodeInfo};
 use serde_json::{Value, json};
 
 mod decode;
@@ -60,9 +64,43 @@ enum Command {
         #[arg(short, long)]
         verbose: bool,
     },
+    /// Join a console waiting in Mii Maker and send it a Mii.
+    Send {
+        #[command(flatten)]
+        join: JoinArgs,
+        /// Record, wrapped record or container to send.
+        file: PathBuf,
+    },
+    /// Join a console waiting in Mii Maker and save the Mii it sends.
+    Receive {
+        #[command(flatten)]
+        join: JoinArgs,
+        /// Where to save the record; defaults to its Mii ID with a .cfsd extension.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
-static STOP: AtomicBool = AtomicBool::new(false);
+#[derive(clap::Args)]
+struct JoinArgs {
+    /// Wireless interface to take over.
+    #[arg(short, long)]
+    interface: String,
+    /// Only join the console with this MAC address.
+    #[arg(long)]
+    host: Option<String>,
+    /// Name the console shows for this computer, up to 10 characters.
+    #[arg(long, default_value = "miidrop")]
+    name: String,
+    /// Seconds to wait for each step that needs someone at the console.
+    #[arg(long, default_value_t = 300)]
+    timeout: u64,
+    /// Take over the interface even if it is connected to a network.
+    #[arg(long)]
+    force: bool,
+}
+
+static STOP: LazyLock<Arc<AtomicBool>> = LazyLock::new(Default::default);
 
 /// Wraps a radio to report frames received per channel.
 struct Counting<R: Radio> {
@@ -146,6 +184,132 @@ fn open_radio(interface: &str, force: bool) -> Result<miidrop::radio::linux::Lin
         );
     }
     Ok(radio)
+}
+
+fn parse_mac(text: &str) -> Result<miidrop::wifi::frame::Mac, String> {
+    let bytes: Vec<u8> = text
+        .split(':')
+        .map(|b| u8::from_str_radix(b, 16))
+        .collect::<Result<_, _>>()
+        .map_err(|_| format!("bad MAC address {text}"))?;
+    bytes
+        .try_into()
+        .map_err(|_| format!("bad MAC address {text}"))
+}
+
+type Joined = Session<Link<miidrop::radio::linux::LinuxRadio>>;
+
+/// Scans until a console with room is waiting, then joins it.
+fn find_and_join(args: &JoinArgs, keys: &Keys) -> Result<Joined, String> {
+    if args.name.encode_utf16().count() > 10 {
+        return Err("--name must be at most 10 characters".into());
+    }
+    let want = args.host.as_deref().map(parse_mac).transpose()?;
+    let mut radio = open_radio(&args.interface, args.force)?;
+    if !radio.capabilities.active_monitor {
+        return Err(format!(
+            "{} cannot acknowledge frames in monitor mode, so it cannot connect",
+            args.interface
+        ));
+    }
+    eprintln!("Searching for a console waiting in Mii Maker...");
+    let until = Instant::now() + Duration::from_secs(args.timeout);
+    let open = |n: &NetworkInfo| {
+        want.is_none_or(|m| n.host == m)
+            && n.appdata.starts_with(b"C:1")
+            && n.total_nodes < n.max_nodes
+    };
+    let network = loop {
+        if STOP.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        if Instant::now() >= until {
+            return Err("no console is waiting".into());
+        }
+        let found = scan::scan(
+            &mut radio,
+            &MII_MAKER,
+            1,
+            keys.beacon.as_ref(),
+            &STOP,
+            |_| {},
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(f) = found.into_iter().find(|f| open(&f.network)) {
+            break f.network;
+        }
+    };
+    eprintln!(
+        "Found {} on channel {}, joining...",
+        mac_text(&network.host),
+        network.channel
+    );
+    let mac = radio.mac();
+    let console_id = u64::from_be_bytes([0, 0, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]]);
+    let me = NodeInfo::new(console_id, &args.name);
+    let link =
+        Link::join(radio, &network, &keys.session, &MII_MAKER, me).map_err(|e| e.to_string())?;
+    eprintln!(
+        "Connected to {}. Press OK on the console.",
+        link.host_name().unwrap_or_else(|| "the console".into())
+    );
+    let mut s = Session::new(link, keys.record);
+    s.set_cancel(STOP.clone());
+    Ok(s)
+}
+
+/// Leaves the network whatever happened, after a short linger on success.
+fn finish<T>(mut s: Joined, result: Result<T, miidrop::Error>) -> Result<T, String> {
+    if result.is_ok() {
+        let _ = s.linger(Duration::from_secs(1));
+    }
+    s.into_link().leave();
+    result.map_err(|e| e.to_string())
+}
+
+fn send(args: &JoinArgs, keys: &Keys, record: &Record) -> Result<(), String> {
+    let mut s = find_and_join(args, keys)?;
+    let t = Duration::from_secs(args.timeout);
+    let mut run = || {
+        s.wait_ready(t)?;
+        // Gives the console a moment to reach its selection screen.
+        s.linger(Duration::from_secs(1))?;
+        eprintln!("Sending {}...", record.name());
+        s.send_mii(record, t)
+    };
+    let result = run();
+    if finish(s, result)? {
+        eprintln!("The console accepted {}.", record.name());
+        Ok(())
+    } else {
+        Err(format!("the console rejected {}", record.name()))
+    }
+}
+
+fn receive(args: &JoinArgs, keys: &Keys, output: Option<PathBuf>) -> Result<(), String> {
+    let mut s = find_and_join(args, keys)?;
+    let t = Duration::from_secs(args.timeout);
+    let mut run = || {
+        s.wait_ready(t)?;
+        eprintln!("Waiting for the console to send a Mii...");
+        s.receive_mii(t)
+    };
+    let result = run();
+    let got = finish(s, result)?;
+    let record = got
+        .record
+        .map_err(|e| format!("the Mii could not be read: {e}"))?;
+    let path = output.unwrap_or_else(|| PathBuf::from(format!("{:08x}.cfsd", record.mii_id())));
+    write(&path, record.as_bytes())?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&describe(&record)).unwrap()
+    );
+    eprintln!("Received {}, saved to {}.", record.name(), path.display());
+    if !got.accepted {
+        eprintln!("The record failed validation, so the console was told it was rejected.");
+    }
+    Ok(())
 }
 
 fn load_keys(path: &Option<PathBuf>) -> Result<Keys, String> {
@@ -256,6 +420,11 @@ fn run(cli: Cli) -> Result<(), String> {
             )
             .map_err(|e| e.to_string())?;
         }
+        Command::Send { join, file } => {
+            let record = read_record(&file, &cli.keys)?;
+            send(&join, &load_keys(&cli.keys)?, &record)?;
+        }
+        Command::Receive { join, output } => receive(&join, &load_keys(&cli.keys)?, output)?,
     }
     Ok(())
 }

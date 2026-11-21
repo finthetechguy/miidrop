@@ -2,10 +2,14 @@
 
 pub mod container;
 pub mod keys;
+pub mod link;
 pub mod mii;
 pub mod prnn;
 pub mod radio;
 pub mod scan;
+pub mod session;
+#[cfg(test)]
+mod sim;
 pub mod uds;
 pub mod wifi;
 
@@ -17,4 +21,12 @@ pub enum Error {
     Format(String),
     #[error("authentication failed")]
     Authentication,
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Timeout(String),
+    #[error("{0}")]
+    Session(String),
+    #[error("cancelled")]
+    Cancelled,
 }

@@ -5,3 +5,6 @@ mod wrap;
 
 pub use record::{FIELDS, Field, Issue, RECORD_SIZE, Record, STORED_SIZE, crc16};
 pub use wrap::{WRAPPED_SIZE, unwrap, wrap};
+
+#[cfg(test)]
+pub(crate) use record::tests::sample;
