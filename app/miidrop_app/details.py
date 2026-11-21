@@ -2,6 +2,8 @@
 
 from gi.repository import Adw, Gtk
 
+from .picture import mii_avatar
+
 COLOURS = [
     "Red", "Orange", "Yellow", "Light green", "Green", "Blue",
     "Light blue", "Pink", "Purple", "Brown", "White", "Black",
@@ -44,7 +46,7 @@ def info_row(title, value):
 class DetailsDialog(Adw.Dialog):
     """Shows a record, with buttons the caller adds for what can be done with it."""
 
-    def __init__(self, record, title=None):
+    def __init__(self, record, title=None, renderer=None):
         super().__init__(title=title or record.name or "Mii", content_width=460, content_height=640)
         self.record = record
         view = Adw.ToolbarView()
@@ -56,6 +58,9 @@ class DetailsDialog(Adw.Dialog):
         self.set_child(view)
 
         fields = record.fields()
+        top = Adw.PreferencesGroup()
+        top.add(mii_avatar(record, 160, renderer))
+        page.add(top)
         about = Adw.PreferencesGroup()
         about.add(info_row("Name", record.name or "—"))
         about.add(info_row("Creator", record.creator or "—"))

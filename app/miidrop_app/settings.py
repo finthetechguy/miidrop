@@ -5,6 +5,8 @@ import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .render import DEFAULT_SERVER
+
 
 def _config_dir():
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "miidrop"
@@ -21,6 +23,8 @@ class Settings:
     library: str = field(default_factory=_default_library)
     interface: str = ""
     name: str = "miidrop"
+    pictures: bool = False
+    picture_server: str = DEFAULT_SERVER
 
     @classmethod
     def load(cls):
@@ -28,7 +32,8 @@ class Settings:
             data = json.loads((_config_dir() / "settings.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return cls()
-        known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__ and isinstance(v, str)}
+        defaults = asdict(cls())
+        known = {k: v for k, v in data.items() if k in defaults and type(v) is type(defaults[k])}
         return cls(**known)
 
     def save(self):

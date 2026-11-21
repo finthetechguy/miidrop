@@ -4,6 +4,7 @@ from gi.repository import Adw, Gio, GLib, Gtk
 
 from .details import DetailsDialog
 from .library import SUFFIX, Library
+from .picture import mii_avatar
 
 
 def cfsd_filter():
@@ -58,6 +59,7 @@ class LibraryPage(Gtk.Box):
         entries = self.library.entries()
         for path, record in entries:
             row = Adw.ActionRow(title=GLib.markup_escape_text(record.name or "Unnamed"), activatable=True)
+            row.add_prefix(mii_avatar(record, 40, self.window.renderer))
             if record.creator:
                 row.set_subtitle(GLib.markup_escape_text(f"by {record.creator}"))
             if record.issues():
@@ -69,7 +71,7 @@ class LibraryPage(Gtk.Box):
         self.stack.set_visible_child_name("list" if entries else "empty")
 
     def show(self, path, record):
-        dialog = DetailsDialog(record)
+        dialog = DetailsDialog(record, renderer=self.window.renderer)
         if self.window.can_send():
             dialog.add_action("Send", lambda: (dialog.close(), self.window.send_record(record)), "suggested-action")
         dialog.add_action("Export…", lambda: self.export_dialog(record))

@@ -11,6 +11,7 @@ from .connect import ConnectPage
 from .helper import Helper
 from .library_page import LibraryPage
 from .preferences import PreferencesDialog
+from .render import Renderer
 from .settings import Settings
 
 # pkexec exits with these when the password prompt is dismissed or refused.
@@ -23,6 +24,7 @@ class Window(Adw.ApplicationWindow):
         self.settings = Settings.load()
         self.helper = Helper(lambda e: GLib.idle_add(self.on_event, e))
         self.helper_interface = None
+        self._renderer = None
         self.beacon_key = False
         self.state = "idle"
 
@@ -53,6 +55,17 @@ class Window(Adw.ApplicationWindow):
 
         self.library_page.refresh()
         self.connect("close-request", self.on_close)
+
+    @property
+    def renderer(self):
+        """The picture renderer, or None when pictures are turned off."""
+        if not self.settings.pictures:
+            return None
+        if self._renderer is None or self._renderer.server != self.settings.picture_server:
+            if self._renderer:
+                self._renderer.close()
+            self._renderer = Renderer(self.settings.picture_server)
+        return self._renderer
 
     def toast(self, text, action=None):
         t = Adw.Toast(title=GLib.markup_escape_text(text), timeout=4)
@@ -122,6 +135,8 @@ class Window(Adw.ApplicationWindow):
 
     def on_close(self, _window):
         self.helper.close()
+        if self._renderer:
+            self._renderer.close()
         return False
 
     # Events from the helper

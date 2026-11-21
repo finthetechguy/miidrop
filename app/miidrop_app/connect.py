@@ -5,6 +5,7 @@ from gi.repository import Adw, GLib, Gtk
 
 from .details import DetailsDialog
 from .interfaces import wireless_interfaces
+from .picture import mii_avatar
 
 BUSY = {
     "searching": ("Looking for a console", "Choose 'Wait for Players' in Mii Maker on the console."),
@@ -211,6 +212,7 @@ class ConnectPage(Gtk.Stack):
         group = Adw.PreferencesGroup()
         for _path, record in entries:
             row = Adw.ActionRow(title=esc(record.name or "Unnamed"), activatable=True)
+            row.add_prefix(mii_avatar(record, 40, self.window.renderer))
             if record.creator:
                 row.set_subtitle(esc(f"by {record.creator}"))
             if record.issues():
@@ -228,6 +230,7 @@ class ConnectPage(Gtk.Stack):
             return
         record = miidrop.Record(bytes.fromhex(event["record"]))
         row = Adw.ActionRow(title=esc(record.name or "Unnamed"), activatable=True)
+        row.add_prefix(mii_avatar(record, 40, self.window.renderer))
         row.set_subtitle(esc(f"by {record.creator}" if record.creator else ""))
         save = button("Save", lambda: self.save(row, record), "suggested-action")
         discard = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Discard", valign=Gtk.Align.CENTER)
@@ -240,7 +243,7 @@ class ConnectPage(Gtk.Stack):
         self.received_rows.append(row)
 
     def show_received(self, row, record):
-        dialog = DetailsDialog(record)
+        dialog = DetailsDialog(record, renderer=self.window.renderer)
         dialog.add_action("Save", lambda: (dialog.close(), self.save(row, record)), "suggested-action")
         dialog.add_action("Discard", lambda: (dialog.close(), self.remove_received(row)))
         dialog.present(self.window)

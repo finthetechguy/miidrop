@@ -27,6 +27,18 @@ class PreferencesDialog(Adw.PreferencesDialog):
         library.add(self.library_row)
         page.add(library)
 
+        pictures = Adw.PreferencesGroup(
+            title="Pictures",
+            description="Pictures are drawn by an online renderer: each Mii's data is sent to the server below.",
+        )
+        self.pictures_row = Adw.SwitchRow(title="Show pictures of Miis", active=self.settings.pictures)
+        self.pictures_row.connect("notify::active", self.pictures_changed)
+        pictures.add(self.pictures_row)
+        self.server_row = Adw.EntryRow(title="Server", text=self.settings.picture_server, show_apply_button=True)
+        self.server_row.connect("apply", self.pictures_changed)
+        pictures.add(self.server_row)
+        page.add(pictures)
+
         you = Adw.PreferencesGroup(title="Connection")
         self.name_row = Adw.EntryRow(title="Name shown to consoles", max_length=10, text=self.settings.name)
         self.name_row.connect("changed", self.name_changed)
@@ -80,6 +92,17 @@ class PreferencesDialog(Adw.PreferencesDialog):
         if name:
             self.settings.name = name
             self.settings.save()
+
+    def pictures_changed(self, *_):
+        server = self.server_row.get_text().strip()
+        if not server.startswith(("https://", "http://")):
+            self.window.toast("The server must be an http(s) address")
+            self.server_row.set_text(self.settings.picture_server)
+            return
+        self.settings.pictures = self.pictures_row.get_active()
+        self.settings.picture_server = server
+        self.settings.save()
+        self.window.library_page.refresh()
 
     def saved(self):
         self.settings.save()
