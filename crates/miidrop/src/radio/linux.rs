@@ -86,6 +86,10 @@ fn nm_managed(interface: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn tuner_name(monitor: &str) -> String {
+    format!("{monitor}t")
+}
+
 fn read_mac(interface: &str) -> io::Result<Mac> {
     let s = std::fs::read_to_string(format!("/sys/class/net/{interface}/address"))?;
     let bytes: Vec<u8> = s
@@ -109,6 +113,7 @@ struct Restore {
 impl Drop for Restore {
     fn drop(&mut self) {
         let _ = run("iw", &["dev", &self.monitor, "del"]);
+        let _ = run("iw", &["dev", &tuner_name(&self.monitor), "del"]);
         if self.was_up {
             let _ = run("ip", &["link", "set", &self.interface, "up"]);
         }
@@ -146,6 +151,7 @@ impl LinuxRadio {
         let phy = phy_of(interface)?;
         let monitor = format!("miidrop{phy}");
         let _ = run("iw", &["dev", &monitor, "del"]);
+        let _ = run("iw", &["dev", &tuner_name(&monitor), "del"]);
 
         let was_up = is_up(interface);
         let was_managed = nm_managed(interface);
@@ -158,7 +164,6 @@ impl LinuxRadio {
         if was_managed {
             run("nmcli", &["device", "set", interface, "managed", "no"])?;
         }
-        run("ip", &["link", "set", interface, "down"])?;
         let phy_name = format!("phy{phy}");
         let mut args = vec![
             "phy",
@@ -173,6 +178,25 @@ impl LinuxRadio {
             args.extend(["flags", "active"]);
         }
         run("iw", &args)?;
+        run("ip", &["link", "set", &monitor, "down"])?;
+        // Full-size stream frames exceed the default MTU once headers are added.
+        run("ip", &["link", "set", &monitor, "mtu", "2000"])?;
+        run("ip", &["link", "set", interface, "down"])?;
+        // An active monitor gets no channel of its own, so a plain one must be up first to hold it.
+        let tuner = tuner_name(&monitor);
+        run(
+            "iw",
+            &[
+                "phy",
+                &phy_name,
+                "interface",
+                "add",
+                &tuner,
+                "type",
+                "monitor",
+            ],
+        )?;
+        run("ip", &["link", "set", &tuner, "up"])?;
         run("ip", &["link", "set", &monitor, "up"])?;
 
         let fd = open_socket(&monitor)?;

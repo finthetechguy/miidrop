@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use miidrop::container;
 use miidrop::keys::Keys;
 use miidrop::mii::{self, FIELDS, RECORD_SIZE, Record, STORED_SIZE, WRAPPED_SIZE};
+use miidrop::radio::Radio;
 use miidrop::scan;
 use miidrop::uds::MII_MAKER;
 use serde_json::{Value, json};
@@ -55,10 +56,58 @@ enum Command {
         /// Take over the interface even if it is connected to a network.
         #[arg(long)]
         force: bool,
+        /// Report how many frames each channel delivered.
+        #[arg(short, long)]
+        verbose: bool,
     },
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
+
+/// Wraps a radio to report frames received per channel.
+struct Counting<R: Radio> {
+    inner: R,
+    channel: u8,
+    frames: u32,
+    verbose: bool,
+}
+
+impl<R: Radio> Counting<R> {
+    fn report(&mut self) {
+        if self.verbose && self.channel != 0 {
+            eprintln!("channel {:2}: {} frames", self.channel, self.frames);
+        }
+        self.frames = 0;
+    }
+}
+
+impl<R: Radio> Radio for Counting<R> {
+    fn mac(&self) -> miidrop::wifi::frame::Mac {
+        self.inner.mac()
+    }
+    fn set_channel(&mut self, channel: u8) -> std::io::Result<()> {
+        self.report();
+        self.channel = channel;
+        self.inner.set_channel(channel)
+    }
+    fn send(&mut self, frame: &[u8]) -> std::io::Result<()> {
+        self.inner.send(frame)
+    }
+    fn recv(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<Option<miidrop::radio::Received>> {
+        let r = self.inner.recv(timeout)?;
+        self.frames += r.is_some() as u32;
+        Ok(r)
+    }
+}
+
+impl<R: Radio> Drop for Counting<R> {
+    fn drop(&mut self) {
+        self.report();
+    }
+}
 
 fn mac_text(m: &[u8]) -> String {
     m.iter()
@@ -185,9 +234,16 @@ fn run(cli: Cli) -> Result<(), String> {
             interface,
             rounds,
             force,
+            verbose,
         } => {
             let beacon_key = load_keys(&cli.keys).ok().and_then(|k| k.beacon);
-            let mut radio = open_radio(&interface, force)?;
+            let radio = open_radio(&interface, force)?;
+            let mut radio = Counting {
+                inner: radio,
+                channel: 0,
+                frames: 0,
+                verbose,
+            };
             scan::scan(
                 &mut radio,
                 &MII_MAKER,
