@@ -132,6 +132,8 @@ pub struct LinuxRadio {
     mac: Mac,
     pub capabilities: Capabilities,
     _restore: Restore,
+    /// Released last, after the card has been restored.
+    _lock: std::fs::File,
 }
 
 impl LinuxRadio {
@@ -149,6 +151,7 @@ impl LinuxRadio {
             )));
         }
         let phy = phy_of(interface)?;
+        let lock = lock_phy(phy)?;
         let monitor = format!("miidrop{phy}");
         let _ = run("iw", &["dev", &monitor, "del"]);
         let _ = run("iw", &["dev", &tuner_name(&monitor), "del"]);
@@ -203,12 +206,29 @@ impl LinuxRadio {
         let mac = read_mac(&monitor)?;
         Ok(LinuxRadio {
             fd,
+            _lock: lock,
             monitor,
             mac,
             capabilities: caps,
             _restore: restore,
         })
     }
+}
+
+/// Holds an exclusive lock on the card so a second instance cannot take it over.
+fn lock_phy(phy: u32) -> io::Result<std::fs::File> {
+    let path = format!("/run/lock/miidrop-phy{phy}.lock");
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::other(format!(
+            "phy{phy} is already in use by another miidrop"
+        )));
+    }
+    Ok(f)
 }
 
 fn open_socket(interface: &str) -> io::Result<OwnedFd> {
