@@ -5,6 +5,7 @@ pub mod keys;
 pub mod mii;
 pub mod prnn;
 pub mod radio;
+pub mod scan;
 pub mod uds;
 pub mod wifi;
 

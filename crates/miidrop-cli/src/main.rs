@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{Parser, Subcommand};
 use miidrop::container;
 use miidrop::keys::Keys;
 use miidrop::mii::{self, FIELDS, RECORD_SIZE, Record, STORED_SIZE, WRAPPED_SIZE};
+use miidrop::scan;
+use miidrop::uds::MII_MAKER;
 use serde_json::{Value, json};
 
 mod decode;
@@ -41,6 +44,59 @@ enum Command {
     Unwrap { input: PathBuf, output: PathBuf },
     /// Decrypt the Mii Maker sessions in a capture and print each message as JSON.
     Decode { pcap: PathBuf },
+    /// List consoles waiting in Mii Maker.
+    Scan {
+        /// Wireless interface to take over while scanning.
+        #[arg(short, long)]
+        interface: String,
+        /// Passes over all channels.
+        #[arg(long, default_value_t = 3)]
+        rounds: u32,
+        /// Take over the interface even if it is connected to a network.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+static STOP: AtomicBool = AtomicBool::new(false);
+
+fn mac_text(m: &[u8]) -> String {
+    m.iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+fn found_json(f: &scan::Found) -> Value {
+    let n = &f.network;
+    json!({
+        "host": mac_text(&n.host),
+        "channel": n.channel,
+        "network_id": format!("{:08x}", n.network_id),
+        "nodes": [n.total_nodes, n.max_nodes],
+        "available": n.appdata.starts_with(b"C:1"),
+        "signal": f.signal,
+        "names": f.names,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn open_radio(interface: &str, force: bool) -> Result<miidrop::radio::linux::LinuxRadio, String> {
+    let radio = miidrop::radio::linux::LinuxRadio::open(interface, force).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied
+            || e.to_string().contains("Operation not permitted")
+        {
+            format!("{e} (needs root or CAP_NET_ADMIN and CAP_NET_RAW)")
+        } else {
+            e.to_string()
+        }
+    })?;
+    if !radio.capabilities.active_monitor {
+        eprintln!(
+            "miidrop: {interface} cannot acknowledge frames in monitor mode; scanning works, connecting will not"
+        );
+    }
+    Ok(radio)
 }
 
 fn load_keys(path: &Option<PathBuf>) -> Result<Keys, String> {
@@ -125,11 +181,31 @@ fn run(cli: Cli) -> Result<(), String> {
             write(&output, read_record(&input, &cli.keys)?.as_bytes())?;
         }
         Command::Decode { pcap } => decode::run(&pcap, &load_keys(&cli.keys)?)?,
+        Command::Scan {
+            interface,
+            rounds,
+            force,
+        } => {
+            let beacon_key = load_keys(&cli.keys).ok().and_then(|k| k.beacon);
+            let mut radio = open_radio(&interface, force)?;
+            scan::scan(
+                &mut radio,
+                &MII_MAKER,
+                rounds,
+                beacon_key.as_ref(),
+                &STOP,
+                |f| {
+                    println!("{}", found_json(f));
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
 
 fn main() -> ExitCode {
+    let _ = ctrlc::set_handler(|| STOP.store(true, Ordering::Relaxed));
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
