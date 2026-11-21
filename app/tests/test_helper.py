@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from miidrop_app.helper import Helper, helper_command  # noqa: E402
+from miidrop_app.helper import Helper, helper_command
 
 FAKE = Path(__file__).with_name("fake_helper.py")
 

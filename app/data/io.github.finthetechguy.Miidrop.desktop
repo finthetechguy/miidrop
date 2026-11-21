@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Miidrop
+Comment=Send and receive Miis with Mii Maker
+Exec=miidrop-app
+Icon=network-wireless-symbolic
+Terminal=false
+Categories=Utility;GTK;
+StartupNotify=true

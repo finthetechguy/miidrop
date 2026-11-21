@@ -16,7 +16,7 @@ def helper_command(interface):
         return shlex.split(override) + ["serve", "-i", interface]
     binary = os.environ.get("MIIDROP_BIN") or shutil.which("miidrop")
     if not binary:
-        raise FileNotFoundError("miidrop is not installed")
+        raise FileNotFoundError("'miidrop' is not installed")
     binary = os.path.abspath(binary)
     argv = [binary, "serve", "-i", interface]
     return argv if os.geteuid() == 0 else ["pkexec"] + argv
@@ -79,7 +79,10 @@ class Helper:
     def load_keys(self, path):
         # The key file is read here, as the user, so the helper never opens user paths.
         with open(path, encoding="utf-8") as f:
-            self._send(cmd="keys", text=f.read())
+            self.send_keys(f.read())
+
+    def send_keys(self, text):
+        self._send(cmd="keys", text=text)
 
     def scan(self):
         self._send(cmd="scan")
