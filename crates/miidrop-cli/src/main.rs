@@ -6,12 +6,13 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use miidrop::container;
+use miidrop::host::HostLink;
 use miidrop::keys::Keys;
 use miidrop::link::Link;
 use miidrop::mii::{self, FIELDS, RECORD_SIZE, Record, STORED_SIZE, WRAPPED_SIZE};
 use miidrop::radio::Radio;
 use miidrop::scan;
-use miidrop::session::Session;
+use miidrop::session::{Session, Transport};
 use miidrop::uds::{MII_MAKER, NetworkInfo, NodeInfo};
 use serde_json::{Value, json};
 
@@ -64,14 +65,14 @@ enum Command {
         #[arg(short, long)]
         verbose: bool,
     },
-    /// Join a console waiting in Mii Maker and send it a Mii.
+    /// Send a Mii to a console in Mii Maker.
     Send {
         #[command(flatten)]
         join: JoinArgs,
         /// Record, wrapped record or container to send.
         file: PathBuf,
     },
-    /// Join a console waiting in Mii Maker and save the Mii it sends.
+    /// Save a Mii a console in Mii Maker sends.
     Receive {
         #[command(flatten)]
         join: JoinArgs,
@@ -98,6 +99,12 @@ struct JoinArgs {
     /// Take over the interface even if it is connected to a network.
     #[arg(long)]
     force: bool,
+    /// Host a network and wait for a searching console instead of joining one.
+    #[arg(long, conflicts_with = "host")]
+    wait: bool,
+    /// Channel to host on.
+    #[arg(long, default_value_t = 6, requires = "wait", value_parser = clap::value_parser!(u8).range(1..=13))]
+    channel: u8,
 }
 
 static STOP: LazyLock<Arc<AtomicBool>> = LazyLock::new(Default::default);
@@ -197,21 +204,86 @@ fn parse_mac(text: &str) -> Result<miidrop::wifi::frame::Mac, String> {
         .map_err(|_| format!("bad MAC address {text}"))
 }
 
-type Joined = Session<Link<miidrop::radio::linux::LinuxRadio>>;
+type LinuxRadio = miidrop::radio::linux::LinuxRadio;
+type Joined = Session<Box<dyn Transport>>;
 
-/// Scans until a console with room is waiting, then joins it.
-fn find_and_join(args: &JoinArgs, keys: &Keys) -> Result<Joined, String> {
+/// Joins a waiting console, or with --wait hosts and waits for a searching one.
+fn connect(args: &JoinArgs, keys: &Keys) -> Result<Joined, String> {
     if args.name.encode_utf16().count() > 10 {
         return Err("--name must be at most 10 characters".into());
     }
     let want = args.host.as_deref().map(parse_mac).transpose()?;
-    let mut radio = open_radio(&args.interface, args.force)?;
+    let radio = open_radio(&args.interface, args.force)?;
     if !radio.capabilities.active_monitor {
         return Err(format!(
             "{} cannot acknowledge frames in monitor mode, so it cannot connect",
             args.interface
         ));
     }
+    let mac = radio.mac();
+    let console_id = u64::from_be_bytes([0, 0, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]]);
+    let me = NodeInfo::new(console_id, &args.name);
+    let link: Box<dyn Transport> = if args.wait {
+        Box::new(host(radio, args, keys, me)?)
+    } else {
+        Box::new(join(radio, args, keys, me, want)?)
+    };
+    let mut s = Session::new(link, keys.record);
+    s.set_cancel(STOP.clone());
+    Ok(s)
+}
+
+fn host(
+    radio: LinuxRadio,
+    args: &JoinArgs,
+    keys: &Keys,
+    me: NodeInfo,
+) -> Result<HostLink<LinuxRadio>, String> {
+    if keys.beacon.is_none() {
+        eprintln!(
+            "miidrop: the key file has no udsBeaconKey, so a searching console may not list this computer"
+        );
+    }
+    let mut link = HostLink::start(
+        radio,
+        &MII_MAKER,
+        &keys.session,
+        keys.beacon,
+        me,
+        args.channel,
+    )
+    .map_err(|e| e.to_string())?;
+    eprintln!(
+        "Hosting on channel {}. Choose Search for Players on the console...",
+        args.channel
+    );
+    let until = Instant::now() + Duration::from_secs(args.timeout);
+    let node = loop {
+        if STOP.load(Ordering::Relaxed) {
+            link.close();
+            return Err("cancelled".into());
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        match link.wait_client(left.min(Duration::from_millis(500))) {
+            Ok(n) => break n,
+            Err(miidrop::Error::Timeout(_)) if !left.is_zero() => {}
+            Err(e) => {
+                link.close();
+                return Err(e.to_string());
+            }
+        }
+    };
+    eprintln!("{} joined. Press OK on the console.", node.name());
+    Ok(link)
+}
+
+fn join(
+    mut radio: LinuxRadio,
+    args: &JoinArgs,
+    keys: &Keys,
+    me: NodeInfo,
+    want: Option<miidrop::wifi::frame::Mac>,
+) -> Result<Link<LinuxRadio>, String> {
     eprintln!("Searching for a console waiting in Mii Maker...");
     let until = Instant::now() + Duration::from_secs(args.timeout);
     let open = |n: &NetworkInfo| {
@@ -244,18 +316,13 @@ fn find_and_join(args: &JoinArgs, keys: &Keys) -> Result<Joined, String> {
         mac_text(&network.host),
         network.channel
     );
-    let mac = radio.mac();
-    let console_id = u64::from_be_bytes([0, 0, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]]);
-    let me = NodeInfo::new(console_id, &args.name);
     let link =
         Link::join(radio, &network, &keys.session, &MII_MAKER, me).map_err(|e| e.to_string())?;
     eprintln!(
         "Connected to {}. Press OK on the console.",
         link.host_name().unwrap_or_else(|| "the console".into())
     );
-    let mut s = Session::new(link, keys.record);
-    s.set_cancel(STOP.clone());
-    Ok(s)
+    Ok(link)
 }
 
 /// Leaves the network whatever happened, after a short linger on success.
@@ -263,12 +330,12 @@ fn finish<T>(mut s: Joined, result: Result<T, miidrop::Error>) -> Result<T, Stri
     if result.is_ok() {
         let _ = s.linger(Duration::from_secs(1));
     }
-    s.into_link().leave();
+    s.into_link().close();
     result.map_err(|e| e.to_string())
 }
 
 fn send(args: &JoinArgs, keys: &Keys, record: &Record) -> Result<(), String> {
-    let mut s = find_and_join(args, keys)?;
+    let mut s = connect(args, keys)?;
     let t = Duration::from_secs(args.timeout);
     let mut run = || {
         s.wait_ready(t)?;
@@ -287,7 +354,7 @@ fn send(args: &JoinArgs, keys: &Keys, record: &Record) -> Result<(), String> {
 }
 
 fn receive(args: &JoinArgs, keys: &Keys, output: Option<PathBuf>) -> Result<(), String> {
-    let mut s = find_and_join(args, keys)?;
+    let mut s = connect(args, keys)?;
     let t = Duration::from_secs(args.timeout);
     let mut run = || {
         s.wait_ready(t)?;

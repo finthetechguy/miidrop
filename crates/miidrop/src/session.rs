@@ -90,6 +90,23 @@ pub trait Transport {
     fn node_id(&self) -> u16;
     fn send(&mut self, channel: u16, dst: u16, payload: &[u8]) -> Result<(), Error>;
     fn recv(&mut self, timeout: Duration) -> Result<Option<LinkEvent>, Error>;
+    /// Leaves or ends the network.
+    fn close(&mut self);
+}
+
+impl<T: Transport + ?Sized> Transport for Box<T> {
+    fn node_id(&self) -> u16 {
+        (**self).node_id()
+    }
+    fn send(&mut self, channel: u16, dst: u16, payload: &[u8]) -> Result<(), Error> {
+        (**self).send(channel, dst, payload)
+    }
+    fn recv(&mut self, timeout: Duration) -> Result<Option<LinkEvent>, Error> {
+        (**self).recv(timeout)
+    }
+    fn close(&mut self) {
+        (**self).close()
+    }
 }
 
 impl<R: Radio> Transport for Link<R> {
@@ -101,6 +118,9 @@ impl<R: Radio> Transport for Link<R> {
     }
     fn recv(&mut self, timeout: Duration) -> Result<Option<LinkEvent>, Error> {
         Link::recv(self, timeout)
+    }
+    fn close(&mut self) {
+        Link::close(self)
     }
 }
 

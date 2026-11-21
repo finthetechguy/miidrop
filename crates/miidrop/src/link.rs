@@ -305,13 +305,19 @@ impl<R: Radio> Link<R> {
         }
     }
 
-    /// Tells the host this node is leaving and hands the radio back.
-    pub fn leave(mut self) -> R {
+    /// Tells the host this node is leaving.
+    pub fn close(&mut self) {
         if self.joined {
             let host = self.network.host;
             let f = frame::deauth(self.me, host, host, REASON_LEAVING);
             let _ = self.send_mgmt(&f);
+            self.joined = false;
         }
+    }
+
+    /// Leaves the network and hands the radio back.
+    pub fn leave(mut self) -> R {
+        self.close();
         self.radio
     }
 }

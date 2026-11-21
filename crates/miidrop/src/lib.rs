@@ -1,6 +1,7 @@
 //! Mii Maker local transfer over UDS.
 
 pub mod container;
+pub mod host;
 pub mod keys;
 pub mod link;
 pub mod mii;

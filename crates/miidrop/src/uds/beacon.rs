@@ -9,7 +9,8 @@ use super::node::{BEACON_ENTRY_LEN, NodeInfo};
 use super::{App, NINTENDO_OUI};
 use crate::keys::Key;
 use crate::wifi::frame::{
-    self, BEACON, Header, IE_DS, IE_EXT_RATES, IE_RATES, IE_VENDOR, Mac, TYPE_MGMT,
+    self, BEACON, BROADCAST, CAPABILITY, Header, IE_DS, IE_ERP, IE_EXT_RATES, IE_RATES, IE_SSID,
+    IE_TIM, IE_VENDOR, Mac, TYPE_MGMT,
 };
 
 type Ctr = ctr::Ctr128BE<Aes128>;
@@ -20,6 +21,9 @@ const TYPE_NODES_MORE: u8 = 0x19;
 const INFO_LEN: usize = 0x34;
 const HASH_AT: usize = 0x1f;
 const FIRST_NODES_LEN: usize = 0xfa;
+const IE_COUNTRY: u8 = 7;
+/// Beacon interval in time units of 1024 microseconds.
+pub const BEACON_INTERVAL_TU: u16 = 100;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NetworkInfo {
@@ -117,6 +121,31 @@ impl NetworkInfo {
             .map(NodeInfo::parse_beacon_entry)
             .collect();
         Some(entries)
+    }
+
+    /// Builds a complete beacon frame, without FCS.
+    pub fn beacon_frame(
+        &self,
+        beacon_key: &Key,
+        nodes: &[NodeInfo],
+        tsf: u64,
+        seq: u16,
+    ) -> Vec<u8> {
+        let mut h = Header::new(TYPE_MGMT, BEACON, 0, BROADCAST, self.host, self.host);
+        h.set_sequence(seq);
+        let mut out = Vec::with_capacity(256);
+        h.write(&mut out);
+        out.extend_from_slice(&tsf.to_le_bytes());
+        out.extend_from_slice(&BEACON_INTERVAL_TU.to_le_bytes());
+        out.extend_from_slice(&CAPABILITY.to_le_bytes());
+        frame::push_element(&mut out, IE_SSID, &[0; 8]);
+        frame::push_element(&mut out, IE_RATES, &self.rates);
+        frame::push_element(&mut out, IE_DS, &[self.channel]);
+        frame::push_element(&mut out, IE_TIM, &[0, 1, 1, 0]);
+        frame::push_element(&mut out, IE_COUNTRY, &[b'J', b'P', 0, 1, 13, 20]);
+        frame::push_element(&mut out, IE_ERP, &[0]);
+        out.extend_from_slice(&self.beacon_elements(beacon_key, nodes));
+        out
     }
 
     /// Builds the vendor elements a host puts in its beacon.
