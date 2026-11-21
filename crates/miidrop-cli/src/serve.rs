@@ -294,7 +294,7 @@ impl Helper {
         let next = loop {
             match self.commands.try_recv() {
                 Ok(Command::Send { record }) => match decode_record(&record) {
-                    Ok(_) if !s.peer_ready() => error("the other console is not ready yet"),
+                    Ok(_) if !s.ready() => error("the other console is not ready yet"),
                     Ok(r) => {
                         let wrapped = miidrop::mii::wrap(&keys.record, &r.for_sending());
                         let c = miidrop::container::build(&wrapped, miidrop::container::LENGTH_3DS);
@@ -319,8 +319,8 @@ impl Helper {
             };
             match event {
                 None | Some(Event::Nodes(_)) => {}
-                Some(Event::PeerReady) => {
-                    s.answer_ready();
+                Some(Event::PeerReady) => s.answer_ready(),
+                Some(Event::Ready) => {
                     emit(json!({ "event": "ready" }));
                     state("ready");
                 }

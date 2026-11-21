@@ -349,8 +349,6 @@ fn send(args: &JoinArgs, keys: &Keys, record: &Record) -> Result<(), String> {
     let t = Duration::from_secs(args.timeout);
     let mut run = || {
         s.wait_ready(t)?;
-        // Gives the console a moment to reach its selection screen.
-        s.linger(Duration::from_secs(1))?;
         eprintln!("Sending {}...", record.name());
         s.send_mii(record, t)
     };

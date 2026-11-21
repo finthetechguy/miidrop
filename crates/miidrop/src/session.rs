@@ -24,6 +24,8 @@ pub const ACCEPTED_WORD: u32 = 0x50;
 const GIVE_UP_MS: u64 = 30_000;
 const MAX_WAIT: Duration = Duration::from_millis(20);
 const SEND_RESTARTS: u32 = 3;
+/// Pause after this node's ready message before a Mii goes out, as a console's user would take.
+const SETTLE_MS: u64 = 1000;
 
 /// Channel a node opens bulk connections on; its control channel is two higher.
 pub fn bulk_channel(node: u16) -> u16 {
@@ -60,6 +62,8 @@ pub struct Received {
 #[derive(Debug)]
 pub enum Event {
     PeerReady,
+    /// Both ready messages are through, so Miis can be exchanged.
+    Ready,
     /// The peer accepted the connection carrying our Mii.
     PeerReceiving,
     /// The peer's verdict on our Mii.
@@ -142,6 +146,10 @@ pub struct Session<T: Transport> {
     peer_ready: bool,
     /// Kind of the control message in flight.
     control_kind: Option<u32>,
+    ready_acked: bool,
+    /// Earliest time a queued container may go out, once known.
+    bulk_from: Option<u64>,
+    queued: Option<Vec<u8>>,
     cancel: Option<Arc<AtomicBool>>,
 }
 
@@ -171,6 +179,9 @@ impl<T: Transport> Session<T> {
             ready_sent: false,
             peer_ready: false,
             control_kind: None,
+            ready_acked: false,
+            bulk_from: None,
+            queued: None,
             cancel: None,
         }
     }
@@ -216,21 +227,34 @@ impl<T: Transport> Session<T> {
             .push_back(control_message(kind, self.word));
     }
 
-    /// Starts sending a 512-byte container on this node's bulk channel.
+    /// Queues a 512-byte container for this node's bulk channel; it goes out once both sides are ready.
     pub fn send_container(&mut self, data: &[u8]) -> Result<(), Error> {
-        let sender = Sender::new(self.isn(), &[data], self.now_ms(), GIVE_UP_MS)
-            .ok_or_else(|| Error::Format("container does not fit one connection".into()))?;
-        self.bulk = Some(Bulk {
-            sender,
-            data: data.to_vec(),
-            restarts: 0,
-        });
+        if data.is_empty() || data.len() > prnn::MAX_DATA {
+            return Err(Error::Format(
+                "container does not fit one connection".into(),
+            ));
+        }
+        self.queued = Some(data.to_vec());
         Ok(())
+    }
+
+    /// Whether both ready messages are through.
+    pub fn ready(&self) -> bool {
+        self.peer_ready && self.ready_acked
+    }
+
+    fn check_ready(&mut self, was: bool) {
+        if !was && self.ready() {
+            self.events.push_back(Event::Ready);
+        }
     }
 
     /// Whether any of this node's messages are still unacknowledged.
     pub fn busy(&self) -> bool {
-        self.control.is_some() || !self.control_queue.is_empty() || self.bulk.is_some()
+        self.control.is_some()
+            || !self.control_queue.is_empty()
+            || self.bulk.is_some()
+            || self.queued.is_some()
     }
 
     fn send_prnn(&mut self, channel: u16, h: &Header, data: &[u8]) -> Result<(), Error> {
@@ -259,6 +283,10 @@ impl<T: Transport> Session<T> {
                         // Clears any half-open sender on the channel this node receives on.
                         let ch = bulk_channel(self.peer);
                         self.send_prnn(ch, &Header::rst(), &[])?;
+                        let was = self.ready();
+                        self.ready_acked = true;
+                        self.bulk_from = Some(now + SETTLE_MS);
+                        self.check_ready(was);
                     }
                 }
                 SendState::Failed => self
@@ -267,6 +295,16 @@ impl<T: Transport> Session<T> {
             }
         }
         let bulk = bulk_channel(self.me());
+        let allowed = self.peer_ready && self.bulk_from.is_some_and(|t| now >= t);
+        if allowed && self.bulk.is_none() {
+            if let Some(data) = self.queued.take() {
+                self.bulk = Sender::new(self.isn(), &[&data], now, GIVE_UP_MS).map(|sender| Bulk {
+                    sender,
+                    data,
+                    restarts: 0,
+                });
+            }
+        }
         if let Some(mut b) = self.bulk.take() {
             while let Some((h, d)) = b.sender.poll(now) {
                 self.send_prnn(bulk, &h, &d)?;
@@ -285,11 +323,16 @@ impl<T: Transport> Session<T> {
             .chain(self.bulk.iter().map(|b| &b.sender))
             .filter_map(|s| s.next_due())
             .min();
+        let held = self
+            .queued
+            .as_ref()
+            .and(self.bulk_from)
+            .filter(|_| self.peer_ready && self.bulk.is_none());
         Ok(
             if self.control.is_none() && !self.control_queue.is_empty() {
                 Some(now)
             } else {
-                due
+                [due, held].into_iter().flatten().min()
             },
         )
     }
@@ -334,8 +377,11 @@ impl<T: Transport> Session<T> {
         };
         let e = match kind {
             READY => {
+                let was = self.ready();
                 self.peer_ready = true;
-                Event::PeerReady
+                self.events.push_back(Event::PeerReady);
+                self.check_ready(was);
+                return;
             }
             RECEIVING => Event::PeerReceiving,
             ACCEPTED => Event::Verdict(true),
