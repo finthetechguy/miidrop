@@ -56,7 +56,9 @@ impl Packet {
         }
         let word = |at: usize| u16::from_be_bytes([b[at], b[at + 1]]);
         if word(0) as usize != b.len() || word(4) as usize + 4 != b.len() {
-            return Err(Error::Format("UDS header sizes do not match the frame".into()));
+            return Err(Error::Format(
+                "UDS header sizes do not match the frame".into(),
+            ));
         }
         Ok(Packet {
             channel: word(6),

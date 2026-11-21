@@ -3,6 +3,7 @@
 pub mod container;
 pub mod keys;
 pub mod mii;
+pub mod prnn;
 pub mod radio;
 pub mod uds;
 pub mod wifi;
