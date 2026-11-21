@@ -140,6 +140,8 @@ pub struct Session<T: Transport> {
     events: VecDeque<Event>,
     ready_sent: bool,
     peer_ready: bool,
+    /// Kind of the control message in flight.
+    control_kind: Option<u32>,
     cancel: Option<Arc<AtomicBool>>,
 }
 
@@ -168,6 +170,7 @@ impl<T: Transport> Session<T> {
             events: VecDeque::new(),
             ready_sent: false,
             peer_ready: false,
+            control_kind: None,
             cancel: None,
         }
     }
@@ -241,6 +244,7 @@ impl<T: Transport> Session<T> {
         if self.control.is_none() {
             if let Some(m) = self.control_queue.pop_front() {
                 self.control = Sender::new(self.isn(), &[&m], now, GIVE_UP_MS);
+                self.control_kind = parse_control(&m).map(|(k, _)| k);
             }
         }
         let control = control_channel(self.me());
@@ -250,7 +254,13 @@ impl<T: Transport> Session<T> {
             }
             match s.state() {
                 SendState::Active => self.control = Some(s),
-                SendState::Done => {}
+                SendState::Done => {
+                    if self.control_kind.take() == Some(READY) {
+                        // Clears any half-open sender on the channel this node receives on.
+                        let ch = bulk_channel(self.peer);
+                        self.send_prnn(ch, &Header::rst(), &[])?;
+                    }
+                }
                 SendState::Failed => self
                     .events
                     .push_back(Event::Failed("control message not acknowledged".into())),
@@ -470,13 +480,19 @@ impl<T: Transport> Session<T> {
                 matches!(e, Event::PeerReady).then_some(())
             })?;
         }
+        self.answer_ready();
+        self.flush(Duration::from_secs(10))
+    }
+
+    /// Queues this node's ready message unless it already went.
+    pub fn answer_ready(&mut self) {
         if !self.ready_sent {
             self.send_control(READY);
         }
-        self.flush(Duration::from_secs(10))?;
-        // Clears any half-open sender on the channel this node receives on.
-        let ch = bulk_channel(self.peer);
-        self.send_prnn(ch, &Header::rst(), &[])
+    }
+
+    pub fn peer_ready(&self) -> bool {
+        self.peer_ready
     }
 
     /// Keeps answering the peer for `d`, so retransmitted segments still get acknowledged.

@@ -17,6 +17,7 @@ use miidrop::uds::{MII_MAKER, NetworkInfo, NodeInfo};
 use serde_json::{Value, json};
 
 mod decode;
+mod serve;
 
 #[derive(Parser)]
 #[command(
@@ -71,6 +72,15 @@ enum Command {
         join: JoinArgs,
         /// Record, wrapped record or container to send.
         file: PathBuf,
+    },
+    /// Run as the desktop app's radio helper, speaking JSON lines on stdin and stdout.
+    Serve {
+        /// Wireless interface to take over.
+        #[arg(short, long)]
+        interface: String,
+        /// Take over the interface even if it is connected to a network.
+        #[arg(long)]
+        force: bool,
     },
     /// Save a Mii a console in Mii Maker sends.
     Receive {
@@ -491,6 +501,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let record = read_record(&file, &cli.keys)?;
             send(&join, &load_keys(&cli.keys)?, &record)?;
         }
+        Command::Serve { interface, force } => serve::run(&interface, force)?,
         Command::Receive { join, output } => receive(&join, &load_keys(&cli.keys)?, output)?,
     }
     Ok(())

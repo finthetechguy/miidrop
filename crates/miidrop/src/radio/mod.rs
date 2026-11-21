@@ -26,3 +26,18 @@ pub trait Radio {
     /// Waits up to `timeout` for the next frame.
     fn recv(&mut self, timeout: Duration) -> io::Result<Option<Received>>;
 }
+
+impl<R: Radio + ?Sized> Radio for &mut R {
+    fn mac(&self) -> Mac {
+        (**self).mac()
+    }
+    fn set_channel(&mut self, channel: u8) -> io::Result<()> {
+        (**self).set_channel(channel)
+    }
+    fn send(&mut self, frame: &[u8]) -> io::Result<()> {
+        (**self).send(frame)
+    }
+    fn recv(&mut self, timeout: Duration) -> io::Result<Option<Received>> {
+        (**self).recv(timeout)
+    }
+}
