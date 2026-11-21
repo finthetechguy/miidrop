@@ -67,7 +67,7 @@ impl Keys {
                 _ => return Err(Error::Keys("slot0x31KeyX/KeyY missing".into())),
             },
         };
-        let beacon = get("nwmBeaconKey")?;
+        let beacon = get("udsBeaconKey")?;
         Ok(Keys {
             session,
             record,

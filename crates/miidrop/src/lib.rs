@@ -3,6 +3,9 @@
 pub mod container;
 pub mod keys;
 pub mod mii;
+pub mod radio;
+pub mod uds;
+pub mod wifi;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

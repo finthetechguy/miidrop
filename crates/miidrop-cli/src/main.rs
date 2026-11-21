@@ -7,6 +7,8 @@ use miidrop::keys::Keys;
 use miidrop::mii::{self, FIELDS, RECORD_SIZE, Record, STORED_SIZE, WRAPPED_SIZE};
 use serde_json::{Value, json};
 
+mod decode;
+
 #[derive(Parser)]
 #[command(
     name = "miidrop",
@@ -37,6 +39,8 @@ enum Command {
     },
     /// Recover the record from a wrapped record or container.
     Unwrap { input: PathBuf, output: PathBuf },
+    /// Decrypt the Mii Maker sessions in a capture and print each message as JSON.
+    Decode { pcap: PathBuf },
 }
 
 fn load_keys(path: &Option<PathBuf>) -> Result<Keys, String> {
@@ -47,7 +51,7 @@ fn load_keys(path: &Option<PathBuf>) -> Result<Keys, String> {
     Keys::load(&path).map_err(|e| e.to_string())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -120,6 +124,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Unwrap { input, output } => {
             write(&output, read_record(&input, &cli.keys)?.as_bytes())?;
         }
+        Command::Decode { pcap } => decode::run(&pcap, &load_keys(&cli.keys)?)?,
     }
     Ok(())
 }
