@@ -94,6 +94,8 @@ struct Helper {
     keys: Option<Keys>,
     /// Quit arrived while an operation was being cancelled.
     pending_quit: bool,
+    /// A command that ended the scan and runs next.
+    queued: Option<Command>,
 }
 
 enum Next {
@@ -131,8 +133,15 @@ impl Helper {
                 return Next::Continue;
             }
             self.cancel.store(false, Ordering::Relaxed);
-            if let Some(n) = self.interrupted() {
-                return n;
+            match self.commands.try_recv() {
+                Ok(Command::Quit) | Err(TryRecvError::Disconnected) => return Next::Quit,
+                Ok(Command::Stop) => return Next::Continue,
+                Ok(c @ (Command::Join { .. } | Command::Host { .. } | Command::Keys { .. })) => {
+                    self.queued = Some(c);
+                    return Next::Continue;
+                }
+                Ok(other) => error(format!("busy, ignored {other:?}")),
+                Err(TryRecvError::Empty) => {}
             }
         }
     }
@@ -365,7 +374,11 @@ pub fn run(interface: &str, force: bool) -> Result<(), String> {
             }
             match parse_command(&line) {
                 Ok(c) => {
-                    if matches!(c, Command::Stop | Command::Quit) {
+                    // Also ends a running scan sweep early; nothing else watches this flag.
+                    if matches!(
+                        c,
+                        Command::Stop | Command::Quit | Command::Join { .. } | Command::Host { .. }
+                    ) {
                         reader_cancel.store(true, Ordering::Relaxed);
                     }
                     if tx.send(c).is_err() {
@@ -389,9 +402,14 @@ pub fn run(interface: &str, force: bool) -> Result<(), String> {
         cancel,
         keys: None,
         pending_quit: false,
+        queued: None,
     };
     loop {
-        let cmd = match helper.commands.recv_timeout(Duration::from_secs(1)) {
+        let next_cmd = match helper.queued.take() {
+            Some(c) => Ok(c),
+            None => helper.commands.recv_timeout(Duration::from_secs(1)),
+        };
+        let cmd = match next_cmd {
             Ok(c) => c,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
