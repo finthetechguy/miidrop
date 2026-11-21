@@ -10,4 +10,6 @@ name = "miidrop"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 miidrop = { path = "../miidrop" }
+serde_json = "1"
