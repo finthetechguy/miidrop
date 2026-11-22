@@ -215,7 +215,6 @@ class App(Adw.Application):
         Adw.AboutDialog(
             application_name="Miidrop",
             application_icon="network-wireless-symbolic",
-            version="0.1.0",
             license_type=Gtk.License.MIT_X11,
             comments="Send and recieve Miis wirelessly from a 3DS or Wii U.",
         ).present(self.props.active_window)
