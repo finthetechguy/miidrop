@@ -4,6 +4,9 @@ Library and frontend to send and receive Miis from a 3DS or Wii U, using Mii Mak
 
 Miidrop joins or hosts a Mii Maker session directly over UDS, no homebrew is needed on a console.
 
+[Get Started](https://github.com/finthetechguy/miidrop/wiki)
+[Protocol](https://github.com/finthetechguy/miidrop/wiki/Protocol-Overview)
+
 <!-- TODO screenshot: Connect page with a console found -->
 <!-- TODO screenshot: Library page and a Mii's details -->
 
